@@ -77,23 +77,29 @@ color() {
 pct() { awk -v u="$1" 'BEGIN{printf "%.1f", u*100}'; }
 
 # visual width in columns (wc -L does not exist on BSD/macOS).
-# awk + LC_ALL=C: builds a byte->value table, decodes UTF-8.
-# ASCII=1 col, multibyte char=2 cols, continuations=0.
+# awk + LC_ALL=C: decodes UTF-8 codepoints. ASCII and East-Asian block chars
+# (U+2580-U+259F, used for the bar fill) are width 1; all other multibyte
+# chars (fullwidth labels) are width 2.
 vwidth() {
   printf '%s' "$1" | LC_ALL=C awk '
     BEGIN{ for(k=0;k<256;k++) ch[k]=sprintf("%c",k) }
     {
       n=0; i=1; L=length($0)
       while(i<=L){
-        b=substr($0,i,1)
-        v=0; for(k=0;k<256;k++) if(ch[k]==b){ v=k; break }
-        if(v<0x80){ n+=1; i++ }
-        else if(v>=0xC0){                    # lead byte
-          n+=2; i++
-          while(i<=L){ bb=substr($0,i,1); bv=0
+        b=substr($0,i,1); v=0
+        for(k=0;k<256;k++) if(ch[k]==b){ v=k; break }
+        if(v<128){ n+=1; i++; continue }
+        if(v>=192){
+          cp=v%32; i++
+          while(i<=L){
+            bb=substr($0,i,1); bv=0
             for(k=0;k<256;k++) if(ch[k]==bb){ bv=k; break }
-            if(bv>=0x80 && bv<=0xBF) i++; else break
+            if(bv>=128 && bv<=191){ cp=cp*64 + bv%64; i++ }
+            else break
           }
+          # block elements U+2580..U+259F are single-width
+          if(cp>=9600 && cp<=9631) n+=1
+          else n+=2
         }
         else i++                             # loose continuation: width 0
       }
@@ -108,26 +114,30 @@ bar() {
   local label="$2"
   local r="$3"
   local width="$4"
+  local fillcolor="$5"
   if [ -z "$width" ]; then
     width="${COLUMNS:-$(tput cols 2>/dev/null || echo 100)}"
   fi
   # visual width of the label (vwidth: portable, wc -L does not exist on BSD/macOS)
   local labelw
   labelw=$(vwidth "$label")
-  awk -v u="$u" -v label="$label" -v r="$r" -v width="$width" -v labelw="$labelw" '
+  awk -v u="$u" -v label="$label" -v r="$r" -v width="$width" -v labelw="$labelw" -v fill="$fillcolor" '
     BEGIN{
       pct=sprintf("%.1f%%", u*100)
-      suffix=sprintf("  %5s  resets in %s", pct, r)
-      barw=width - labelw - length(suffix) - 1
+      text=sprintf("  %5s  resets in %s", pct, r)
+      suffix="#[fg=colour255]" text
+      barw=width - labelw - length(text) - 1
       if(barw<4) barw=4
       full=int(u*barw)
       frac=int((u*barw-full)*8)
       seg="▉▊▋▌▍▎▏"
+      fillcode="#[fg=" fill "]"
+      gray="#[fg=colour240]"
       out=""
       for(i=0;i<barw;i++){
-        if(i<full) out=out "█"
-        else if(i==full && frac>=1) out=out substr(seg,frac,1)
-        else out=out "░"
+        if(i<full) out=out fillcode "█"
+        else if(i==full && frac>=1) out=out fillcode substr(seg,frac,1)
+        else out=out gray "░"
       }
       printf "%s%s%s", label, out, suffix
     }'
@@ -136,11 +146,12 @@ bar() {
 # estimated reset: session every 4h, weekly every 7 days (returns HH:MM:SS)
 reset() {
   local window_secs="$1"
-  awk -v win="$window_secs" 'BEGIN{
-    now=systime()
-    nxt=int((now/win)+1)*win
-    d=nxt-now
-    if(d<0) d=0
+  local now nxt d
+  now=$(date +%s)
+  nxt=$(( (now / window_secs + 1) * window_secs ))
+  d=$(( nxt - now ))
+  if [ "$d" -lt 0 ]; then d=0; fi
+  awk -v d="$d" 'BEGIN{
     h=int(d/3600); m=int((d%3600)/60); s=d%60
     printf "%02d:%02d:%02d", h, m, s
   }'
@@ -169,8 +180,8 @@ centered() {
 }
 
 # colorize bar: colored fill, rest gray
-sess() { bar "$SESS" "Ｓｅｓｓｉｏｎ  Ｕｓａｇｅ  " "$SESS_R" "$1" | sed "s/█/#[fg=$SESS_C]█/g; s/▉/#[fg=$SESS_C]▉/g; s/▊/#[fg=$SESS_C]▊/g; s/▋/#[fg=$SESS_C]▋/g; s/▌/#[fg=$SESS_C]▌/g; s/▍/#[fg=$SESS_C]▍/g; s/▎/#[fg=$SESS_C]▎/g; s/▏/#[fg=$SESS_C]▏/g; s/░/#[fg=colour240]░/g"; }
-week() { bar "$WK" "Ｗｅｅｋｌｙ    Ｕｓａｇｅ  " "$WK_R" "$1" | sed "s/█/#[fg=$WK_C]█/g; s/▉/#[fg=$WK_C]▉/g; s/▊/#[fg=$WK_C]▊/g; s/▋/#[fg=$WK_C]▋/g; s/▌/#[fg=$WK_C]▌/g; s/▍/#[fg=$WK_C]▍/g; s/▎/#[fg=$WK_C]▎/g; s/▏/#[fg=$WK_C]▏/g; s/░/#[fg=colour240]░/g"; }
+sess() { bar "$SESS" "Ｓｅｓｓｉｏｎ  Ｕｓａｇｅ  " "$SESS_R" "$1" "$SESS_C"; }
+week() { bar "$WK" "Ｗｅｅｋｌｙ    Ｕｓａｇｅ  " "$WK_R" "$1" "$WK_C"; }
 
 case "${1:-all}" in
   session)
