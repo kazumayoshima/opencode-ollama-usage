@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Instalador de opencode-ollama-usage
-# Muestra una barra superior fija en tmux con el uso de Ollama Cloud:
-#   session usage, weekly usage (barras de progreso + % + reset)
-#   modelo mas usado, y tiempo de sesion (reloj).
+# Installer for opencode-ollama-usage
+# Shows a fixed top bar in tmux with Ollama Cloud usage:
+#   session usage, weekly usage (progress bars + % + reset)
+#   most-used model, and session time (clock).
 #
-# Requisitos: tmux, opencode, curl, awk, grep, sed, date, stat.
-# (herramientas bash/awk estandar de cualquier distribucion)
+# Requirements: tmux, opencode, curl, awk, grep, sed, date, stat.
+# (standard bash/awk tools available on any distribution)
 #
-# La API key NO se guarda ni expone aqui: se lee de la instalacion de
-# opencode ($HOME/.local/share/opencode/auth.json) en tiempo de ejecucion.
+# The API key is NOT stored or exposed here: it is read from the opencode
+# installation ($HOME/.local/share/opencode/auth.json) at runtime.
 #
-# Uso:
-#   ./install.sh            # instala en ~/.local/bin (usa opencode-tmux)
-#   ./install.sh --dry-run  # solo muestra pasos sin ejecutar
+# Usage:
+#   ./install.sh            # installs into ~/.local/bin (uses opencode-tmux)
+#   ./install.sh --dry-run  # only show steps without executing
 #   ./install.sh --help
 set -euo pipefail
 
@@ -28,7 +28,7 @@ for a in "$@"; do
       sed -n '2,30p' "$0" | grep '^#' | sed 's/^# \?//'
       exit 0 ;;
     --dry-run) DRY_RUN=1 ;;
-    *) echo "opcion desconocida: $a (usa --help)" >&2; exit 1 ;;
+    *) echo "unknown option: $a (use --help)" >&2; exit 1 ;;
   esac
 done
 
@@ -36,55 +36,55 @@ info()  { echo -e "$TAG $*"; }
 warn()  { echo -e "$TAG [warn] $*" >&2; }
 die()   { echo -e "$TAG [error] $*" >&2; exit 1; }
 
-# ---- 1. dependencias ----
-info "Revisando dependencias..."
+# ---- 1. dependencies ----
+info "Checking dependencies..."
 MISSING=()
 for bin in tmux opencode curl awk grep sed date stat; do
   if command -v "$bin" >/dev/null 2>&1; then
     info "  OK  $bin ($(command -v "$bin"))"
   else
-    warn "  FALTA $bin"
+    warn "  MISSING $bin"
     MISSING+=("$bin")
   fi
 done
 if [ "${#MISSING[@]}" -gt 0 ]; then
-  die "Faltan binarios: ${MISSING[*]}. Instalalos antes de continuar."
+  die "Missing binaries: ${MISSING[*]}. Install them before continuing."
 fi
 
-# ---- 2. key de ollama (sin exponerla) ----
+# ---- 2. ollama key (without exposing it) ----
 AUTH="$HOME/.local/share/opencode/auth.json"
 if [ -f "$AUTH" ]; then
   if grep -q '"ollama-cloud"' "$AUTH" 2>/dev/null && grep -q '"key"' "$AUTH" 2>/dev/null; then
-    info "  OK  auth de opencode presente: $AUTH"
+    info "  OK  opencode auth present: $AUTH"
   else
-    warn "auth.json no contiene 'ollama-cloud'; las barras mostraran 'no key'"
+    warn "auth.json does not contain 'ollama-cloud'; bars will show 'no key'"
   fi
 else
-  warn "No se encontro $AUTH"
-  warn "Ollama Cloud debe estar logueado en opencode. Las barras mostraran 'no key'."
+  warn "Could not find $AUTH"
+  warn "Ollama Cloud must be logged in on opencode. Bars will show 'no key'."
 fi
-info "  (la key se lee en runtime desde opencode; no se copia ni imprime)"
+info "  (the key is read at runtime from opencode; it is not copied or printed)"
 
-# ---- 3. copiar scripts ----
+# ---- 3. copy scripts ----
 if [ "$DRY_RUN" = "1" ]; then
-  info "[dry-run] se copiarian a $PREFIX: ${FILES[*]}"
+  info "[dry-run] would copy to $PREFIX: ${FILES[*]}"
 else
   mkdir -p "$PREFIX"
   for f in "${FILES[@]}"; do
-    [ -f "$SRC_DIR/$f" ] || die "falta archivo: $SRC_DIR/$f"
+    [ -f "$SRC_DIR/$f" ] || die "missing file: $SRC_DIR/$f"
     cp "$SRC_DIR/$f" "$PREFIX/$f"
     chmod +x "$PREFIX/$f"
-    info "  instalado: $PREFIX/$f"
+    info "  installed: $PREFIX/$f"
   done
 fi
 
-# ---- 4. comprobar PATH ----
+# ---- 4. check PATH ----
 case ":$PATH:" in
-  *":$PREFIX:"*) info "  OK  $PREFIX ya esta en PATH" ;;
-  *) warn "$PREFIX no esta en PATH. Anadelo para usar 'opencode-tmux' directamente."
+  *":$PREFIX:"*) info "  OK  $PREFIX already in PATH" ;;
+  *) warn "$PREFIX is not in PATH. Add it to use 'opencode-tmux' directly."
      warn "  export PATH=\"$PREFIX:\$PATH\"" ;;
 esac
 
-# ---- 5. resumen ----
-info "Listo. Ejecuta:  opencode-tmux   (en lugar de 'opencode')"
-info "Dentro de tmux puedes cerrar la sesion con: tmux detach (C-b d)"
+# ---- 5. summary ----
+info "Done. Run:  opencode-tmux   (instead of 'opencode')"
+info "Inside tmux you can close the session with: tmux detach (C-b d)"

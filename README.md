@@ -1,6 +1,6 @@
 # opencode-ollama-usage
 
-Barra superior fija en **tmux** con el uso de **Ollama Cloud** para opencode:
+Fixed top bar in **tmux** showing **Ollama Cloud** usage for opencode:
 
 ```
 0:tmux*  Ollama Pro - Model most used this week  deepseek-v4-flash:0731 · 2131 req   ⏱ 0:05
@@ -10,30 +10,30 @@ Barra superior fija en **tmux** con el uso de **Ollama Cloud** para opencode:
          ──────────────────────────────────────────────────────────────────────────
 ```
 
-- Uso de sesión y semanal (barras + % + reset en `HH:MM:SS`)
-- Modelo más usado de la semana y tiempo de sesión
-- La API key se lee en runtime de opencode (`~/.local/share/opencode/auth.json`), nunca se guarda ni imprime
+- Session and weekly usage (bars + % + reset in `HH:MM:SS`)
+- Most-used model of the week and session time
+- The API key is read at runtime from opencode (`~/.local/share/opencode/auth.json`); it is never stored or printed
 
-## Requisitos
+## Requirements
 
-`tmux` ≥ 3.0, `opencode` con Ollama Cloud logueado, y `curl`, `awk`, `grep`, `sed`, `date`, `stat`.
+`tmux` ≥ 3.0, `opencode` logged in with Ollama Cloud, plus `curl`, `awk`, `grep`, `sed`, `date`, `stat`.
 
-## Instalación
+## Installation
 
 ```bash
 cd ~/opencode-ollama-usage
 ./install.sh
 ```
 
-## Uso
+## Usage
 
 ```bash
 opencode-tmux
 ```
 
-Reabrir `opencode-tmux` vuelve a adjuntarse a la sesión. Para aplicar cambios: `tmux kill-session -t opencode`.
+Re-running `opencode-tmux` re-attaches to the session. To apply changes: `tmux kill-session -t opencode`.
 
-## Desinstalar
+## Uninstall
 
 ```bash
 rm -f ~/.local/bin/opencode-tmux ~/.local/bin/ollama-usage ~/.local/bin/opencode-ruler ~/.local/bin/opencode-session-time

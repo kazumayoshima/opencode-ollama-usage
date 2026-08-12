@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Uso de Ollama Cloud para barra tmux multi-linea con barras de progreso.
-# Uso: ollama-usage [session|weekly|model|all]
-# Lee la API key de opencode auth.json (o $OLLAMA_API_KEY) y consulta
+# Ollama Cloud usage for a multi-line tmux bar with progress bars.
+# Usage: ollama-usage [session|weekly|model|all]
+# Reads the API key from the opencode auth.json (or $OLLAMA_API_KEY) and queries
 # https://ollama.com/api/usage
-# Solo requiere: bash, curl, awk, sed, date, stat.
+# Only requires: bash, curl, awk, sed, date, stat.
 
 AUTH="$HOME/.local/share/opencode/auth.json"
 KEY="${OLLAMA_API_KEY:-}"
-# si no hay OLLAMA_API_KEY, leer la key de opencode (nunca se imprime)
+# if no OLLAMA_API_KEY, read the key from opencode (never printed)
 if [ -z "$KEY" ] && [ -f "$AUTH" ]; then
-  # {"ollama-cloud":{"type":"...","key":"..."}} -> extraer key sin json tools
+  # {"ollama-cloud":{"type":"...","key":"..."}} -> extract key without json tools
   KEY=$(tr -d '[:space:]' < "$AUTH" | sed 's/.*"ollama-cloud"[^}]*"key"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' 2>/dev/null)
 fi
 
@@ -21,8 +21,13 @@ fi
 CACHE="$HOME/.cache/ollama-usage.json"
 CACHE_TTL=60
 
-# usar cache si es reciente
-if [ -f "$CACHE" ] && [ $(( $(date +%s) - $(stat -c %Y "$CACHE" 2>/dev/null || echo 0) )) -lt $CACHE_TTL ]; then
+# use cache if recent (stat is portable: -c on GNU, -f on BSD/macOS)
+if [ "$(uname -s)" = "Darwin" ]; then
+  MTIME=$(stat -f %m "$CACHE" 2>/dev/null || echo 0)
+else
+  MTIME=$(stat -c %Y "$CACHE" 2>/dev/null || echo 0)
+fi
+if [ -f "$CACHE" ] && [ $(( $(date +%s) - MTIME )) -lt $CACHE_TTL ]; then
   DATA=$(cat "$CACHE")
 else
   DATA=$(curl -s -m 5 -H "Authorization: Bearer $KEY" "https://ollama.com/api/usage" 2>/dev/null)
@@ -36,20 +41,20 @@ if [ -z "$DATA" ]; then
   exit 0
 fi
 
-# parsear JSON (estructura fija conocida). Extraer cada valor con herramientas
-# basicas: grep -o + sed. Funciona con cualquier distribucion.
+# parse JSON (known fixed structure). Extract each value with basic tools:
+# grep -o + sed. Works on any distribution.
 
-# session usage: tras "session":{"usage":  va un numero
+# session usage: after "session":{"usage":  comes a number
 SESS=$(echo "$DATA" | grep -o '"session":{[^}]*"usage":[0-9.eE-]*' | grep -o '[0-9.eE-]*$' | head -1)
 # weekly usage
 WK=$(echo "$DATA" | grep -o '"weekly":{[^}]*"usage":[0-9.eE-]*' | grep -o '[0-9.eE-]*$' | head -1)
-# suma de request_count semanales
+# sum of weekly request_count
 REQ=$(echo "$DATA" | grep -o '"request_count":[0-9]*' | grep -o '[0-9]*' | awk '{s+=$1} END{print s+0}')
-# primer nombre de modelo semanal
+# first weekly model name
 MODEL=$(echo "$DATA" | grep -o '"name":"[^"]*"' | head -1 | sed 's/.*"name":"//; s/"$//')
 MODEL="${MODEL:--}"
 
-# fallback a 0 si vacio
+# fallback to 0 if empty
 SESS="${SESS:-0}"
 WK="${WK:-0}"
 REQ="${REQ:-0}"
@@ -59,7 +64,7 @@ if ! echo "$SESS$WK" | grep -qE '^[0-9.eE-]+$' ; then
   exit 0
 fi
 
-# color segun nivel de uso (uso es fraccion 0..1)
+# color by usage level (usage is a fraction 0..1)
 color() {
   local u="$1"
   if awk -v u="$u" 'BEGIN{exit !(u>0.7)}' ; then echo "red"
@@ -67,11 +72,36 @@ color() {
   else echo "green"; fi
 }
 
-# pct con un decimal
+# pct with one decimal
 pct() { awk -v u="$1" 'BEGIN{printf "%.1f", u*100}'; }
 
-# barra de progreso a ancho completo: label + barra (rellena) + % + reset
-# ancho se pasa como $4 (opcional); dentro de tmux usalo via #{pane_width}
+# visual width in columns (wc -L does not exist on BSD/macOS).
+# awk + LC_ALL=C: builds a byte->value table, decodes UTF-8.
+# ASCII=1 col, multibyte char=2 cols, continuations=0.
+vwidth() {
+  printf '%s' "$1" | LC_ALL=C awk '
+    BEGIN{ for(k=0;k<256;k++) ch[k]=sprintf("%c",k) }
+    {
+      n=0; i=1; L=length($0)
+      while(i<=L){
+        b=substr($0,i,1)
+        v=0; for(k=0;k<256;k++) if(ch[k]==b){ v=k; break }
+        if(v<0x80){ n+=1; i++ }
+        else if(v>=0xC0){                    # lead byte
+          n+=2; i++
+          while(i<=L){ bb=substr($0,i,1); bv=0
+            for(k=0;k<256;k++) if(ch[k]==bb){ bv=k; break }
+            if(bv>=0x80 && bv<=0xBF) i++; else break
+          }
+        }
+        else i++                             # loose continuation: width 0
+      }
+      printf "%d", n
+    }'
+}
+
+# full-width progress bar: label + bar (filled) + % + reset
+# width passed as $4 (optional); inside tmux use it via #{pane_width}
 bar() {
   local u="$1"
   local label="$2"
@@ -80,9 +110,9 @@ bar() {
   if [ -z "$width" ]; then
     width="${COLUMNS:-$(tput cols 2>/dev/null || echo 100)}"
   fi
-  # ancho visual del label (wc -L cuenta columnas, no bytes)
+  # visual width of the label (vwidth: portable, wc -L does not exist on BSD/macOS)
   local labelw
-  labelw=$(printf '%s' "$label" | wc -L)
+  labelw=$(vwidth "$label")
   awk -v u="$u" -v label="$label" -v r="$r" -v width="$width" -v labelw="$labelw" '
     BEGIN{
       pct=sprintf("%.1f%%", u*100)
@@ -102,7 +132,7 @@ bar() {
     }'
 }
 
-# reset estimado: session cada 4h, weekly cada 7 dias (devuelve HH:MM:SS)
+# estimated reset: session every 4h, weekly every 7 days (returns HH:MM:SS)
 reset() {
   local window_secs="$1"
   awk -v win="$window_secs" 'BEGIN{
@@ -122,14 +152,14 @@ WK_C=$(color "$WK")
 SESS_R=$(reset 14400)
 WK_R=$(reset 604800)
 
-# centrar texto en el ancho del pane, dejando espacio a la izquierda (tabs)
-# y a la derecha (reloj). Uso: centered <texto> <ancho>
+# center text in the pane width, leaving space on the left (tabs)
+# and on the right (clock). Usage: centered <text> <width>
 centered() {
   local text="$1"
   local width="$2"
   local textw leftw
-  textw=$(printf '%s' "$text" | wc -L)
-  # reservar ~10 cols izq (tabs) y ~10 cols der (reloj)
+  textw=$(vwidth "$text")
+  # reserve ~10 cols left (tabs) and ~10 cols right (clock)
   local avail=$(( width - 20 ))
   leftw=$(( (avail - textw) / 2 ))
   if [ "$leftw" -lt 0 ]; then leftw=0; fi
@@ -137,7 +167,7 @@ centered() {
   printf '%s' "$text"
 }
 
-# colorizar barra: relleno coloreado, resto gris
+# colorize bar: colored fill, rest gray
 sess() { bar "$SESS" "Ｓｅｓｓｉｏｎ  Ｕｓａｇｅ  " "$SESS_R" "$1" | sed "s/█/#[fg=$SESS_C]█/g; s/▉/#[fg=$SESS_C]▉/g; s/▊/#[fg=$SESS_C]▊/g; s/▋/#[fg=$SESS_C]▋/g; s/▌/#[fg=$SESS_C]▌/g; s/▍/#[fg=$SESS_C]▍/g; s/▎/#[fg=$SESS_C]▎/g; s/▏/#[fg=$SESS_C]▏/g; s/░/#[fg=colour240]░/g"; }
 week() { bar "$WK" "Ｗｅｅｋｌｙ    Ｕｓａｇｅ  " "$WK_R" "$1" | sed "s/█/#[fg=$WK_C]█/g; s/▉/#[fg=$WK_C]▉/g; s/▊/#[fg=$WK_C]▊/g; s/▋/#[fg=$WK_C]▋/g; s/▌/#[fg=$WK_C]▌/g; s/▍/#[fg=$WK_C]▍/g; s/▎/#[fg=$WK_C]▎/g; s/▏/#[fg=$WK_C]▏/g; s/░/#[fg=colour240]░/g"; }
 
