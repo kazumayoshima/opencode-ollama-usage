@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Genera una linea horizontal (ruler) del ancho del pane (menos 1 col de borde).
+# Uso: opencode-ruler [ancho]   (ancho opcional; default: tput cols)
+width="${1:-${COLUMNS:-$(tput cols 2>/dev/null || echo 100)}}"
+width=$(( width - 1 ))
+awk -v w="$width" 'BEGIN{ if(w<0) w=0; for(i=0;i<w;i++) printf "─" }'

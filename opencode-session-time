@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Muestra el tiempo de sesion transcurrido desde que se abrio opencode-tmux.
+# El timestamp se guarda en un archivo al crear la sesion.
+
+STAMP="$HOME/.cache/opencode-session-start"
+if [ ! -f "$STAMP" ]; then
+  echo "0:00"
+  exit 0
+fi
+
+START=$(cat "$STAMP")
+NOW=$(date +%s)
+ELAPSED=$(( NOW - START ))
+H=$(( ELAPSED / 3600 ))
+M=$(( (ELAPSED % 3600) / 60 ))
+S=$(( ELAPSED % 60 ))
+
+if [ "$H" -gt 0 ]; then
+  printf "%d:%02d:%02d" "$H" "$M" "$S"
+else
+  printf "%d:%02d" "$M" "$S"
+fi

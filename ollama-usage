@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# Uso de Ollama Cloud para barra tmux multi-linea con barras de progreso.
+# Uso: ollama-usage [session|weekly|model|all]
+# Lee la API key de opencode auth.json (o $OLLAMA_API_KEY) y consulta
+# https://ollama.com/api/usage
+# Solo requiere: bash, curl, awk, sed, date, stat.
+
+AUTH="$HOME/.local/share/opencode/auth.json"
+KEY="${OLLAMA_API_KEY:-}"
+# si no hay OLLAMA_API_KEY, leer la key de opencode (nunca se imprime)
+if [ -z "$KEY" ] && [ -f "$AUTH" ]; then
+  # {"ollama-cloud":{"type":"...","key":"..."}} -> extraer key sin json tools
+  KEY=$(tr -d '[:space:]' < "$AUTH" | sed 's/.*"ollama-cloud"[^}]*"key"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' 2>/dev/null)
+fi
+
+if [ -z "$KEY" ]; then
+  echo "#[fg=red]ollama: no key#[default]"
+  exit 0
+fi
+
+CACHE="$HOME/.cache/ollama-usage.json"
+CACHE_TTL=60
+
+# usar cache si es reciente
+if [ -f "$CACHE" ] && [ $(( $(date +%s) - $(stat -c %Y "$CACHE" 2>/dev/null || echo 0) )) -lt $CACHE_TTL ]; then
+  DATA=$(cat "$CACHE")
+else
+  DATA=$(curl -s -m 5 -H "Authorization: Bearer $KEY" "https://ollama.com/api/usage" 2>/dev/null)
+  if [ -n "$DATA" ]; then
+    mkdir -p "$(dirname "$CACHE")"
+    echo "$DATA" > "$CACHE"
+  fi
+fi
+if [ -z "$DATA" ]; then
+  echo "#[fg=yellow]ollama: n/a#[default]"
+  exit 0
+fi
+
+# parsear JSON (estructura fija conocida). Extraer cada valor con herramientas
+# basicas: grep -o + sed. Funciona con cualquier distribucion.
+
+# session usage: tras "session":{"usage":  va un numero
+SESS=$(echo "$DATA" | grep -o '"session":{[^}]*"usage":[0-9.eE-]*' | grep -o '[0-9.eE-]*$' | head -1)
+# weekly usage
+WK=$(echo "$DATA" | grep -o '"weekly":{[^}]*"usage":[0-9.eE-]*' | grep -o '[0-9.eE-]*$' | head -1)
+# suma de request_count semanales
+REQ=$(echo "$DATA" | grep -o '"request_count":[0-9]*' | grep -o '[0-9]*' | awk '{s+=$1} END{print s+0}')
+# primer nombre de modelo semanal
+MODEL=$(echo "$DATA" | grep -o '"name":"[^"]*"' | head -1 | sed 's/.*"name":"//; s/"$//')
+MODEL="${MODEL:--}"
+
+# fallback a 0 si vacio
+SESS="${SESS:-0}"
+WK="${WK:-0}"
+REQ="${REQ:-0}"
+
+if ! echo "$SESS$WK" | grep -qE '^[0-9.eE-]+$' ; then
+  echo "#[fg=yellow]ollama: n/a#[default]"
+  exit 0
+fi
+
+# color segun nivel de uso (uso es fraccion 0..1)
+color() {
+  local u="$1"
+  if awk -v u="$u" 'BEGIN{exit !(u>0.7)}' ; then echo "red"
+  elif awk -v u="$u" 'BEGIN{exit !(u>0.4)}' ; then echo "yellow"
+  else echo "green"; fi
+}
+
+# pct con un decimal
+pct() { awk -v u="$1" 'BEGIN{printf "%.1f", u*100}'; }
+
+# barra de progreso a ancho completo: label + barra (rellena) + % + reset
+# ancho se pasa como $4 (opcional); dentro de tmux usalo via #{pane_width}
+bar() {
+  local u="$1"
+  local label="$2"
+  local r="$3"
+  local width="$4"
+  if [ -z "$width" ]; then
+    width="${COLUMNS:-$(tput cols 2>/dev/null || echo 100)}"
+  fi
+  # ancho visual del label (wc -L cuenta columnas, no bytes)
+  local labelw
+  labelw=$(printf '%s' "$label" | wc -L)
+  awk -v u="$u" -v label="$label" -v r="$r" -v width="$width" -v labelw="$labelw" '
+    BEGIN{
+      pct=sprintf("%.1f%%", u*100)
+      suffix=sprintf("  %5s  resets in %s", pct, r)
+      barw=width - labelw - length(suffix) - 1
+      if(barw<4) barw=4
+      full=int(u*barw)
+      frac=int((u*barw-full)*8)
+      seg="▉▊▋▌▍▎▏"
+      out=""
+      for(i=0;i<barw;i++){
+        if(i<full) out=out "█"
+        else if(i==full && frac>=1) out=out substr(seg,frac,1)
+        else out=out "░"
+      }
+      printf "%s%s%s", label, out, suffix
+    }'
+}
+
+# reset estimado: session cada 4h, weekly cada 7 dias (devuelve HH:MM:SS)
+reset() {
+  local window_secs="$1"
+  awk -v win="$window_secs" 'BEGIN{
+    now=systime()
+    nxt=int((now/win)+1)*win
+    d=nxt-now
+    if(d<0) d=0
+    h=int(d/3600); m=int((d%3600)/60); s=d%60
+    printf "%02d:%02d:%02d", h, m, s
+  }'
+}
+
+SESS_PCT=$(pct "$SESS")
+WK_PCT=$(pct "$WK")
+SESS_C=$(color "$SESS")
+WK_C=$(color "$WK")
+SESS_R=$(reset 14400)
+WK_R=$(reset 604800)
+
+# centrar texto en el ancho del pane, dejando espacio a la izquierda (tabs)
+# y a la derecha (reloj). Uso: centered <texto> <ancho>
+centered() {
+  local text="$1"
+  local width="$2"
+  local textw leftw
+  textw=$(printf '%s' "$text" | wc -L)
+  # reservar ~10 cols izq (tabs) y ~10 cols der (reloj)
+  local avail=$(( width - 20 ))
+  leftw=$(( (avail - textw) / 2 ))
+  if [ "$leftw" -lt 0 ]; then leftw=0; fi
+  awk -v n="$leftw" 'BEGIN{ for(i=0;i<n;i++) printf " " }'
+  printf '%s' "$text"
+}
+
+# colorizar barra: relleno coloreado, resto gris
+sess() { bar "$SESS" "Ｓｅｓｓｉｏｎ  Ｕｓａｇｅ  " "$SESS_R" "$1" | sed "s/█/#[fg=$SESS_C]█/g; s/▉/#[fg=$SESS_C]▉/g; s/▊/#[fg=$SESS_C]▊/g; s/▋/#[fg=$SESS_C]▋/g; s/▌/#[fg=$SESS_C]▌/g; s/▍/#[fg=$SESS_C]▍/g; s/▎/#[fg=$SESS_C]▎/g; s/▏/#[fg=$SESS_C]▏/g; s/░/#[fg=colour240]░/g"; }
+week() { bar "$WK" "Ｗｅｅｋｌｙ    Ｕｓａｇｅ  " "$WK_R" "$1" | sed "s/█/#[fg=$WK_C]█/g; s/▉/#[fg=$WK_C]▉/g; s/▊/#[fg=$WK_C]▊/g; s/▋/#[fg=$WK_C]▋/g; s/▌/#[fg=$WK_C]▌/g; s/▍/#[fg=$WK_C]▍/g; s/▎/#[fg=$WK_C]▎/g; s/▏/#[fg=$WK_C]▏/g; s/░/#[fg=colour240]░/g"; }
+
+case "${1:-all}" in
+  session)
+    echo "#[bg=colour236]#[fg=colour255]$(sess "$2")#[default]"
+    ;;
+  weekly)
+    echo "#[bg=colour236]#[fg=colour255]$(week "$2")#[default]"
+    ;;
+  model)
+    echo "#[bg=colour236]#[fg=colour255]$(centered "Ollama Pro -  Model most used this week  ${MODEL} · ${REQ} requests" "$2")#[default]"
+    ;;
+  all)
+    echo "#[bg=colour236]#[fg=colour255]$(sess "$2")#[default]"
+    echo "#[bg=colour236]#[fg=colour255]$(week "$2")#[default]"
+    echo "#[bg=colour236]#[fg=colour255]$(centered "Ollama Pro -  Model most used this week  ${MODEL} · ${REQ} requests" "$2")#[default]"
+    ;;
+esac

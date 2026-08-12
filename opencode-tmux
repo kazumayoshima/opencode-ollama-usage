@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Abre opencode dentro de tmux con barra superior fija de 5 lineas
+# mostrando uso de Ollama Cloud (session, weekly) con barras de progreso.
+# Linea 0: tabs + modelos + tiempo de sesion a la derecha.
+# Linea 1: session usage.
+# Linea 2: ruler horizontal.
+# Linea 3: weekly usage.
+# Linea 4: ruler horizontal.
+# Uso: opencode-tmux [args...]
+
+SESSION="opencode"
+
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+  tmux attach-session -t "$SESSION"
+  exit 0
+fi
+
+# registrar inicio de sesion para el reloj
+mkdir -p "$HOME/.cache"
+date +%s > "$HOME/.cache/opencode-session-start"
+
+tmux new-session -d -s "$SESSION" -x "$(tput cols)" -y "$(tput lines)" "opencode $*"
+
+# barra de estado superior fija, 5 lineas
+tmux set-option -t "$SESSION" status-position top
+tmux set-option -t "$SESSION" status 5
+tmux set-option -t "$SESSION" status-style "bg=colour236,fg=colour255"
+tmux set-option -t "$SESSION" status-interval 1
+tmux set-option -t "$SESSION" status-right-length 120
+
+# linea 0: tabs + modelo centrado + tiempo de sesion a la derecha
+tmux set-option -t "$SESSION" status-format[0] "#[align=left]#{W:#{E:window-status-format} ,#{E:window-status-current-format} }#[align=centre]#[bg=colour236]#[fg=colour255]#(ollama-usage model 0)#[align=right]#[bg=colour236]#[fg=colour245] ⏱ #(opencode-session-time) #[default]"
+# linea 1: session usage a la izquierda
+tmux set-option -t "$SESSION" status-format[1] "#[align=left]#[bg=colour236]#[fg=colour255] #(ollama-usage session #{pane_width}) #[default]"
+# linea 2: ruler horizontal centrado
+tmux set-option -t "$SESSION" status-format[2] "#[align=center]#[bg=colour236]#[fg=colour240] #(opencode-ruler #{pane_width})#[default]"
+# linea 3: weekly usage a la izquierda
+tmux set-option -t "$SESSION" status-format[3] "#[align=left]#[bg=colour236]#[fg=colour255] #(ollama-usage weekly #{pane_width}) #[default]"
+# linea 4: ruler horizontal centrado
+tmux set-option -t "$SESSION" status-format[4] "#[align=center]#[bg=colour236]#[fg=colour240] #(opencode-ruler #{pane_width})#[default]"
+
+tmux attach-session -t "$SESSION"
