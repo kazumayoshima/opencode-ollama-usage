@@ -44,10 +44,11 @@ fi
 # parse JSON (known fixed structure). Extract each value with basic tools:
 # grep -o + sed. Works on any distribution.
 
-# session usage: after "session":{"usage":  comes a number
-SESS=$(echo "$DATA" | grep -o '"session":{[^}]*"usage":[0-9.eE-]*' | grep -o '[0-9.eE-]*$' | head -1)
-# weekly usage
-WK=$(echo "$DATA" | grep -o '"weekly":{[^}]*"usage":[0-9.eE-]*' | grep -o '[0-9.eE-]*$' | head -1)
+# usage values appear in order: session, then weekly. Extract them positionally
+# so field order inside each object ("models" before/after "usage") doesn't matter.
+USAGES=$(echo "$DATA" | grep -o '"usage":[0-9.eE-]*' | sed 's/.*://')
+SESS=$(echo "$USAGES" | sed -n '1p')
+WK=$(echo "$USAGES" | sed -n '2p')
 # sum of weekly request_count
 REQ=$(echo "$DATA" | grep -o '"request_count":[0-9]*' | grep -o '[0-9]*' | awk '{s+=$1} END{print s+0}')
 # first weekly model name
