@@ -18,25 +18,39 @@ if [ -z "$KEY" ]; then
   exit 0
 fi
 
-CACHE="$HOME/.cache/ollama-usage.json"
+CACHE_BAL="$HOME/.cache/ollama-usage-balance.json"
+CACHE_REQ="$HOME/.cache/ollama-usage-requests.json"
 CACHE_TTL=60
 
 # use cache if recent (stat is portable: -c on GNU, -f on BSD/macOS)
-if [ "$(uname -s)" = "Darwin" ]; then
-  MTIME=$(stat -f %m "$CACHE" 2>/dev/null || echo 0)
-else
-  MTIME=$(stat -c %Y "$CACHE" 2>/dev/null || echo 0)
-fi
-if [ -f "$CACHE" ] && [ $(( $(date +%s) - MTIME )) -lt $CACHE_TTL ]; then
-  DATA=$(cat "$CACHE")
-else
-  DATA=$(curl -s -m 5 -H "Authorization: Bearer $KEY" "https://ollama.com/api/usage" 2>/dev/null)
-  if [ -n "$DATA" ]; then
-    mkdir -p "$(dirname "$CACHE")"
-    echo "$DATA" > "$CACHE"
+mtime() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    stat -f %m "$1" 2>/dev/null || echo 0
+  else
+    stat -c %Y "$1" 2>/dev/null || echo 0
   fi
-fi
-if [ -z "$DATA" ]; then
+}
+
+# cached GET: reuse a recent cache file, otherwise fetch and store it.
+cached_get() {
+  local cache="$1" url="$2" body
+  if [ -f "$cache" ] && [ $(( $(date +%s) - $(mtime "$cache") )) -lt $CACHE_TTL ]; then
+    cat "$cache"
+    return
+  fi
+  body=$(curl -s -m 5 -H "Authorization: Bearer $KEY" "$url" 2>/dev/null)
+  if [ -n "$body" ]; then
+    mkdir -p "$(dirname "$cache")"
+    echo "$body" > "$cache"
+  fi
+  printf '%s' "$body"
+}
+
+# Since the late-2026 API change the usage percentages live in /api/balance
+# (remaining_percent per window); /api/usage only reports request counts.
+BAL=$(cached_get "$CACHE_BAL" "https://ollama.com/api/balance")
+USAGE=$(cached_get "$CACHE_REQ" "https://ollama.com/api/usage?range=7d")
+if [ -z "$BAL" ]; then
   echo "#[fg=yellow]ollama: n/a#[default]"
   exit 0
 fi
@@ -44,21 +58,24 @@ fi
 # parse JSON (known fixed structure). Extract each value with basic tools:
 # grep -o + sed. Works on any distribution.
 
-# usage values appear in order: session, then weekly. Extract them positionally
-# so field order inside each object ("models" before/after "usage") doesn't matter.
-USAGES=$(echo "$DATA" | grep -o '"usage":[0-9.eE-]*' | sed 's/.*://')
-SESS=$(echo "$USAGES" | sed -n '1p')
-WK=$(echo "$USAGES" | sed -n '2p')
-# sum of weekly request_count
-REQ=$(echo "$DATA" | grep -o '"request_count":[0-9]*' | grep -o '[0-9]*' | awk '{s+=$1} END{print s+0}')
-# first weekly model name
-MODEL=$(echo "$DATA" | grep -o '"name":"[^"]*"' | head -1 | sed 's/.*"name":"//; s/"$//')
-MODEL="${MODEL:--}"
+# session/weekly: usage = 1 - remaining_percent/100
+SESS_OBJ=$(echo "$BAL" | grep -o '"session":{[^}]*}')
+WK_OBJ=$(echo "$BAL" | grep -o '"weekly":{[^}]*}' | head -1)
+SREM=$(echo "$SESS_OBJ" | grep -o '"remaining_percent":[0-9.]*' | sed 's/.*://')
+WREM=$(echo "$WK_OBJ" | grep -o '"remaining_percent":[0-9.]*' | sed 's/.*://')
+SESS_AT=$(echo "$SESS_OBJ" | grep -o '"resets_at":"[^"]*"' | sed 's/.*:"//; s/"$//')
+WK_AT=$(echo "$WK_OBJ" | grep -o '"resets_at":"[^"]*"' | sed 's/.*:"//; s/"$//')
+SREM="${SREM:-100}"
+WREM="${WREM:-100}"
+SESS=$(awk -v r="$SREM" 'BEGIN{printf "%.4f",(100-r)/100}')
+WK=$(awk -v r="$WREM" 'BEGIN{printf "%.4f",(100-r)/100}')
 
-# fallback to 0 if empty
-SESS="${SESS:-0}"
-WK="${WK:-0}"
+# weekly requests: use totals only (buckets would double-count)
+REQ=$(echo "$USAGE" | grep -o '"totals":{[^}]*}' | grep -o '"request_count":[0-9]*' | sed 's/.*://')
 REQ="${REQ:-0}"
+# the API no longer reports per-model usage; keep the name if it ever returns
+MODEL=$(echo "$USAGE" | grep -o '"name":"[^"]*"' | head -1 | sed 's/.*"name":"//; s/"$//')
+MODEL="${MODEL:--}"
 
 if ! echo "$SESS$WK" | grep -qE '^[0-9.eE-]+$' ; then
   echo "#[fg=yellow]ollama: n/a#[default]"
@@ -143,12 +160,18 @@ bar() {
     }'
 }
 
-# estimated reset: session every 4h, weekly every 7 days (returns HH:MM:SS)
+# exact reset time from the API resets_at (ISO 8601 UTC) -> HH:MM:SS
+iso_epoch() {
+  # GNU date first, then BSD/macOS date
+  date -u -d "$1" +%s 2>/dev/null \
+    || date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$1" +%s 2>/dev/null
+}
+
 reset() {
-  local window_secs="$1"
-  local now nxt d
-  now=$(date +%s)
-  nxt=$(( (now / window_secs + 1) * window_secs ))
+  local at="$1" now nxt d
+  now=$(date -u +%s)
+  nxt=$(iso_epoch "$at")
+  if [ -z "$nxt" ]; then echo "--:--:--"; return; fi
   d=$(( nxt - now ))
   if [ "$d" -lt 0 ]; then d=0; fi
   awk -v d="$d" 'BEGIN{
@@ -161,8 +184,15 @@ SESS_PCT=$(pct "$SESS")
 WK_PCT=$(pct "$WK")
 SESS_C=$(color "$SESS")
 WK_C=$(color "$WK")
-SESS_R=$(reset 14400)
-WK_R=$(reset 604800)
+SESS_R=$(reset "$SESS_AT")
+WK_R=$(reset "$WK_AT")
+
+# the API no longer exposes per-model usage; degrade gracefully
+if [ "$MODEL" = "-" ]; then
+  MODEL_TEXT="Ollama Pro -  ${REQ} requests this week"
+else
+  MODEL_TEXT="Ollama Pro -  Model most used this week  ${MODEL} · ${REQ} requests"
+fi
 
 # center text in the pane width, leaving space on the left (tabs)
 # and on the right (clock). Usage: centered <text> <width>
@@ -191,11 +221,11 @@ case "${1:-all}" in
     echo "#[bg=colour236]#[fg=colour255]$(week "$2")#[default]"
     ;;
   model)
-    echo "#[bg=colour236]#[fg=colour255]$(centered "Ollama Pro -  Model most used this week  ${MODEL} · ${REQ} requests" "$2")#[default]"
+    echo "#[bg=colour236]#[fg=colour255]$(centered "$MODEL_TEXT" "$2")#[default]"
     ;;
   all)
     echo "#[bg=colour236]#[fg=colour255]$(sess "$2")#[default]"
     echo "#[bg=colour236]#[fg=colour255]$(week "$2")#[default]"
-    echo "#[bg=colour236]#[fg=colour255]$(centered "Ollama Pro -  Model most used this week  ${MODEL} · ${REQ} requests" "$2")#[default]"
+    echo "#[bg=colour236]#[fg=colour255]$(centered "$MODEL_TEXT" "$2")#[default]"
     ;;
 esac
