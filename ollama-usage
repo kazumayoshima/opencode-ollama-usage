@@ -5,6 +5,13 @@
 # https://ollama.com/api/usage
 # Only requires: bash, curl, awk, sed, date, stat.
 
+# Force '.' as the decimal separator. awk's printf follows LC_NUMERIC, so on
+# locales such as es_ES "%.4f" would emit "0,0000" (comma), which then breaks
+# the numeric parsing/checks below. LC_ALL wins over LC_NUMERIC when set, so
+# clear it too to guarantee the C numeric format.
+unset LC_ALL
+export LC_NUMERIC=C
+
 AUTH="$HOME/.local/share/opencode/auth.json"
 KEY="${OLLAMA_API_KEY:-}"
 # if no OLLAMA_API_KEY, read the key from opencode (never printed)
